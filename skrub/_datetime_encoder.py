@@ -145,8 +145,8 @@ class DatetimeEncoder(SingleColumnTransformer):
         will be day 365 on non-leap years.
 
     add_is_weekend : list[int] or None, default=None
-        If not None, add a column ``is_weekend`` that is 1.0 on days whose ISO
-        weekday number is in the list and 0.0 otherwise. Days are numbered from
+        If not None, add a column ``is_weekend`` that is True on days whose
+        weekday number is in the list and False otherwise. Days are numbered from
         1 (Monday) to 7 (Sunday). For example, ``[6, 7]`` marks Saturday and
         Sunday as weekend.
 
