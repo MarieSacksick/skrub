@@ -93,6 +93,23 @@ def _get_dt_feature_polars(col, feature):
     return getattr(col.dt, feature)()
 
 
+@dispatch
+def _get_is_weekend(col, weekend_days):
+    from ._dispatch import raise_dispatch_unregistered_type
+
+    raise_dispatch_unregistered_type(col, kind="Series")
+
+
+@_get_is_weekend.specialize("pandas", argument_type="Column")
+def _get_is_weekend_pandas(col, weekend_days):
+    return (col.dt.day_of_week + 1).isin(weekend_days)
+
+
+@_get_is_weekend.specialize("polars", argument_type="Column")
+def _get_is_weekend_polars(col, weekend_days):
+    return col.dt.weekday().is_in(weekend_days)
+
+
 class DatetimeEncoder(SingleColumnTransformer):
     """
     Extract temporal features such as month, day of the week, … from a datetime column.
@@ -127,6 +144,12 @@ class DatetimeEncoder(SingleColumnTransformer):
         366 in the case of leap years). January 1st will be day 1, December 31st
         will be day 365 on non-leap years.
 
+    add_is_weekend : list[int] or None, default=None
+        If not None, add a column ``is_weekend`` that is True on days whose
+        weekday number is in the list and False otherwise. Days are numbered from
+        1 (Monday) to 7 (Sunday). For example, ``[6, 7]`` marks Saturday and
+        Sunday as weekend.
+
     periodic_encoding : 'circular', 'spline', or None, default=None
         Add periodic features with different granularities. Add periodic features
         using either trigonometric (``circular``) or ``spline`` encoding.
@@ -136,7 +159,7 @@ class DatetimeEncoder(SingleColumnTransformer):
     ----------
     extracted_features_ : list of strings
         The features that are extracted, a subset of ["year", …, "nanosecond",
-        "weekday", "total_seconds", "day_of_year"]. If ``periodic_encoding`` is set to either
+        "weekday", "total_seconds", "day_of_year", "is_weekend"]. If ``periodic_encoding`` is set to either
         ``circular`` or ``spline``, the extracted periodic features will also be
         added. Given a feature named ``date``, new features will be named
         ``date_month_circular_0``, ``date_month_circular_1`` etc., or ``date_month_spline_00``, ``date_month_spline_01`` etc., accordingly.
@@ -225,6 +248,23 @@ class DatetimeEncoder(SingleColumnTransformer):
     0      2024.0          5.0       13.0        12.0            1.0
     1         NaN          NaN        NaN         NaN            NaN
     2      2024.0          5.0       15.0        13.0            3.0
+
+    ``add_is_weekend`` accepts a list of ISO weekday numbers (1=Monday … 7=Sunday)
+    that should be considered as "weekend". The resulting column contains 1.0
+    for matching days and 0.0 otherwise.
+
+    >>> dates = pd.to_datetime(
+    ...     pd.Series(["2024-05-11", "2024-05-13", "2024-05-15"], name="date")
+    ... )
+    >>> DatetimeEncoder(
+    ...     add_is_weekend=[6, 7], add_total_seconds=False, resolution="day"
+    ... ).fit_transform(dates)
+       date_year  date_month  date_day  date_is_weekend
+    0     2024.0         5.0      11.0              1.0
+    1     2024.0         5.0      13.0              0.0
+    2     2024.0         5.0      15.0              0.0
+
+    (2024-05-11 is a Saturday, 2024-05-13 is a Monday, 2024-05-15 is a Wednesday.)
 
     When a column contains only dates without time information, the time features
     are discarded, regardless of ``resolution``.
@@ -339,12 +379,14 @@ class DatetimeEncoder(SingleColumnTransformer):
         add_weekday=False,
         add_total_seconds=True,
         add_day_of_year=False,
+        add_is_weekend=None,
         periodic_encoding=None,
     ):
         self.resolution = resolution
         self.add_weekday = add_weekday
         self.add_total_seconds = add_total_seconds
         self.add_day_of_year = add_day_of_year
+        self.add_is_weekend = add_is_weekend
         self.periodic_encoding = periodic_encoding
 
     def fit_transform(self, column, y=None):
@@ -382,7 +424,8 @@ class DatetimeEncoder(SingleColumnTransformer):
             self.extracted_features_.append("weekday")
         if self.add_day_of_year:
             self.extracted_features_.append("day_of_year")
-
+        if self.add_is_weekend is not None:
+            self.extracted_features_.append("is_weekend")
         col_name = sbd.name(column)
 
         # Adding transformers for periodic encoding
@@ -443,7 +486,13 @@ class DatetimeEncoder(SingleColumnTransformer):
         all_extracted = []
         new_features = []
         for feature in self.extracted_features_:
-            if feature not in self._periodic_encoders:
+            if feature == "is_weekend":
+                extracted = _get_is_weekend(column, self.add_is_weekend).rename(
+                    f"{name}_is_weekend"
+                )
+                extracted = sbd.to_float32(extracted)
+                all_extracted.append(extracted)
+            elif feature not in self._periodic_encoders:
                 extracted = _get_dt_feature(column, feature).rename(f"{name}_{feature}")
                 extracted = sbd.to_float32(extracted)
                 all_extracted.append(extracted)
@@ -483,6 +532,19 @@ class DatetimeEncoder(SingleColumnTransformer):
             raise ValueError(
                 f"Unsupported value {self.periodic_encoding} for periodic_encoding."
             )
+
+        if self.add_is_weekend is not None:
+            if not isinstance(self.add_is_weekend, (list, tuple)):
+                raise ValueError(
+                    f"'add_is_weekend' must be a list of ints in [1, 7] or None,"
+                    f" got {self.add_is_weekend!r}."
+                )
+            invalid = [d for d in self.add_is_weekend if d not in range(1, 8)]
+            if invalid:
+                raise ValueError(
+                    f"'add_is_weekend' must contain ints in [1, 7],"
+                    f" got invalid values: {invalid}."
+                )
 
     def _more_tags(self):
         return {"preserves_dtype": []}

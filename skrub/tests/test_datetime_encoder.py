@@ -375,3 +375,21 @@ def test_n_splines_default_value(df_module):
     enc = _SplineEncoder(period=period)
     result = enc.fit_transform(df_module.make_column("when", [20, 20, 20]))
     assert sbd.column_names(result) == [f"when_spline_{i:02d}" for i in range(period)]
+
+
+def test_is_weekend(datetime_cols, df_module):
+    # 2020-01-01 is Wednesday (weekday 3), 2022-01-01 is Saturday (weekday 6)
+    enc = DatetimeEncoder(add_is_weekend=[6, 7])
+    result = enc.fit_transform(datetime_cols.datetime)
+
+    assert "is_weekend" in enc.extracted_features_
+    assert "is_weekend" in sbd.column_names(result)
+
+    expected = df_module.make_dataframe({"when_is_weekend": [False, None, True]})
+    actual = s.select(result, ["when_is_weekend"])
+    df_module.assert_frame_equal(actual, expected)
+
+
+def test_is_weekend_invalid_day(datetime_cols):
+    with pytest.raises(ValueError, match=r"got invalid values"):
+        DatetimeEncoder(add_is_weekend=[6, 8]).fit(datetime_cols.datetime)
